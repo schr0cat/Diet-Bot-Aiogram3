@@ -18,8 +18,6 @@ dp = Dispatcher()
 async def set_bot_commands(bot: Bot):
     commands = [
         BotCommand(command='start', description="Запустить бота"),
-        BotCommand(command='min', description="Настроить минуты"),
-        BotCommand(command='sec', description="Настроить секунды"),
     ]
     await bot.set_my_commands(commands)
 

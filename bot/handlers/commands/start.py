@@ -4,8 +4,9 @@ from datetime import datetime
 from aiogram import types, Router, Bot
 from aiogram.client.session import aiohttp
 from aiogram.enums import ParseMode
+from aiogram.filters.callback_data import CallbackData
 from aiogram.fsm.state import StatesGroup, State
-from aiogram.types import Message
+from aiogram.types import Message, CallbackQuery
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 
@@ -25,14 +26,29 @@ class InputTime(StatesGroup):
   choosing_seconds = State()
   choosing_minutes = State()
   choosing_data = State()
+  choosing_set = State()
+
+  choosing_time_hour = State()
+  choosing_time_minute = State()
 
 
-async def change_minute(message: Message, state: FSMContext):
-  print('hello1')
-  await message.answer(
-    text='Выберите, во сколько минут должно приходить сообщение:'
-  )
-  await state.set_state(InputTime.choosing_minutes)
+async def cmd_start(message: Message, state: FSMContext):
+  await message.answer(f'Здравствуйте! Выберите тип прихода сообщений: интервал или расписание:')
+  await state.set_state(InputTime.choosing_data)
+
+
+async def change_data(message: Message, state: FSMContext):
+  await state.update_data(change=message.text)
+  data = await state.get_data()
+  change = data['change']
+  await message.answer(f'Выбран тип: {change}')
+
+  if message.text.lower() == 'интервал':
+    await message.answer('Выберите, во сколько минут должно приходить сообщение:')
+    await state.set_state(InputTime.choosing_minutes)
+  elif message.text.lower() == 'точное время':
+    await message.answer('Введите, во сколько часов каждый день должны приходить сообщения:')
+    await state.set_state(InputTime.choosing_time_hour)
 
 
 async def add_minute(message: Message, state: FSMContext):
@@ -40,25 +56,60 @@ async def add_minute(message: Message, state: FSMContext):
   data = await state.get_data()
   minutes = data['minute']
   await message.answer(f'Сообщения будут приходить каждую(ые) {minutes} минут(ы)')
-  await state.set_state(None)
-
-
-async def change_second(message: Message, state: FSMContext):
-  print('hello')
-  await message.answer(
-    text='Выберите, во сколько секунд должно приходить сообщение:'
-  )
-  # await state.update_data(second=message.text)
+  await message.answer(f'Выберите, во сколько секунд должно приходить сообщение:')
   await state.set_state(InputTime.choosing_seconds)
 
 
 async def add_second(message: Message, state: FSMContext):
-  print('hello')
   await state.update_data(second=message.text)
   data = await state.get_data()
   seconds = data['second']
   await message.answer(f'Сообщения будут приходить каждую(ые) {seconds} секунд(ы)')
-  await state.set_state(None)
+
+  get_data = await state.get_data()
+  seconds = int(get_data['second'])
+  minutes = int(get_data['minute'])
+
+  scheduler = AsyncIOScheduler()
+
+  scheduler.add_job(send_news_to_chat, trigger='interval', minutes=minutes, seconds=seconds,
+                    start_date=datetime.now(), kwargs={
+      'chat_id': message.chat.id
+    })
+
+  await message.answer(f'Сообщения будут приходить с интервалом\n<b>{minutes} минут, {seconds} секунд</b>',
+                         parse_mode=ParseMode.HTML)
+
+  scheduler.start()
+
+
+async def set_time_hours(message: Message, state: FSMContext):
+  await message.answer('Время установлено')
+  await state.update_data(time_hour=message.text)
+  await message.answer('Введите, во сколько минут каждый день должны приходить сообщения')
+  await state.set_state(InputTime.choosing_time_minute)
+
+
+async def set_time_minutes(message: Message, state: FSMContext):
+  await state.update_data(time_minute=message.text)
+  get_data = await state.get_data()
+  hour = get_data['time_hour']
+  minute = get_data['time_minute']
+  await message.answer(f'Время установлено. Сообщения будут приходить каждый день в <b>{hour}:{minute}</b>',
+                       parse_mode=ParseMode.HTML)
+
+  scheduler = AsyncIOScheduler()
+
+  scheduler.add_job(send_news_to_chat, trigger='cron', hour=hour, minute=minute, start_date=datetime.now(), kwargs={
+    'chat_id': message.chat.id
+  })
+
+  scheduler.start()
+
+
+async def cmd_cancel(message: Message, state: FSMContext):
+  await state.clear()
+  await message.answer('Действие отменено')
 
 
 async def print_hour(message: Message, state: FSMContext):
@@ -114,45 +165,10 @@ async def send_news_to_chat(chat_id):
   data = await fetch_rss()
   if data:
     news = parse_rss(data)
+    print(news)
     for entry in news:
       text = f"<b>{entry['title']}</b>\n{entry['link']}"
       await bot.send_message(chat_id, text, parse_mode=ParseMode.HTML)
-
-
-async def cmd_start(message: Message, state: FSMContext):
-  await message.answer(f'Здравствуйте! Выберите тип прихода сообщений: интервал или расписание:')
-  await state.set_state(InputTime.choosing_data)
-
-
-async def change_data(message: Message, state: FSMContext):
-  await state.update_data(change=message.text)
-  data = await state.get_data()
-  change = data['change']
-  await message.answer(f'Выбран тип: {change}')
-  await state.set_state(None)
-
-
-async def cmd_set_interval(message: Message, state: FSMContext):
-  get_data = await state.get_data()
-
-  scheduler = AsyncIOScheduler()
-
-  if get_data['change'] == 'интервал':
-    seconds = int(get_data['second'])
-    minutes = int(get_data['minute'])
-
-    scheduler.add_job(send_news_to_chat, trigger='interval', minutes=minutes, seconds=seconds, start_date=datetime.now(), kwargs={
-        'chat_id': message.chat.id
-      })
-
-    await message.answer(f'Сообщения будут приходить с интервалом\n<b>{minutes} минут, {seconds} секунд</b>', parse_mode=ParseMode.HTML)
-  else:
-    scheduler.add_job(send_news_to_chat, trigger='cron', hour=2, minute=4, second=40, start_date=datetime.now(), kwargs={
-                        'chat_id': message.chat.id
-                      })
-
-  scheduler.start()
-  await state.set_state(None)
 
 
 def register_states_handler(router: Router):
